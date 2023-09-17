@@ -8,9 +8,9 @@ from jmcomic.cl import get_env, JmcomicUI
 # [https://18comic.vip/album/452859/mana-ディシア-1-原神-中国語-無修正] -> [452859]
 #
 jm_albums = '''
-326197
-
-
+313472
+303074
+144955
 '''
 
 # 单独下载章节
