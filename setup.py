@@ -27,10 +27,11 @@ setup(
     package_dir={"": "src"},
     python_requires=">=3.7",
     install_requires=[
-        'commonX>=0.5.6',
+        'commonX>=0.6.4',
         'curl_cffi',
         'PyYAML',
         'Pillow',
+        'pycryptodome',
     ],
     keywords=['python', 'jmcomic', '18comic', '禁漫天堂', 'NSFW'],
     classifiers=[
@@ -47,7 +48,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'jmcomic = jmcomic:main'
+            'jmcomic = jmcomic.cl:main'
         ]
     }
 )

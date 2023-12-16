@@ -5,9 +5,25 @@ from .jm_config import *
 
 class JmBaseEntity:
 
-    def save_to_file(self, filepath):
+    def to_file(self, filepath):
         from common import PackerUtil
         PackerUtil.pack(self, filepath)
+
+    @classmethod
+    def is_image(cls):
+        return False
+
+    @classmethod
+    def is_photo(cls):
+        return False
+
+    @classmethod
+    def is_album(cls):
+        return False
+
+    @classmethod
+    def is_page(cls):
+        return False
 
 
 class IndexedEntity:
@@ -45,6 +61,58 @@ class DetailEntity(JmBaseEntity, IndexedEntity):
     def title(self) -> str:
         return getattr(self, 'name')
 
+    @property
+    def author(self):
+        raise NotImplementedError
+
+    @property
+    def oname(self) -> str:
+        """
+        oname = original name
+
+        示例:
+
+        title："喂我吃吧 老師! [欶瀾漢化組] [BLVEFO9] たべさせて、せんせい! (ブルーアーカイブ) [中國翻譯] [無修正]"
+
+        oname："喂我吃吧 老師!"
+
+        :return: 返回本子的原始名称
+        """
+        from .jm_toolkit import JmcomicText
+        oname = JmcomicText.parse_orig_album_name(self.title)
+        if oname is not None:
+            return oname
+
+        jm_log('entity', f'无法提取出原album名字: {self.title}')
+        return self.title
+
+    @property
+    def authoroname(self):
+        """
+        authoroname = author + oname
+
+        比较好识别的一种本子名称方式
+
+        具体格式: f'【author】{oname}'
+
+        示例:
+
+        原本子名：喂我吃吧 老師! [欶瀾漢化組] [BLVEFO9] たべさせて、せんせい! (ブルーアーカイブ) [中國翻譯] [無修正]
+
+        authoroname：【BLVEFO9】喂我吃吧 老師!
+
+        :return: 返回作者名+作品原名，格式为: '【author】{oname}'
+        """
+        return f'【{self.author}】{self.oname}'
+
+    @property
+    def idoname(self):
+        """
+        类似 authoroname
+        :return: '[id] {oname}'
+        """
+        return f'[{self.id}] {self.oname}'
+
     def __str__(self):
         return f'{self.__class__.__name__}({self.id}-{self.title})'
 
@@ -54,6 +122,34 @@ class DetailEntity(JmBaseEntity, IndexedEntity):
         # "JmPhotoDetail" -> "photo" (章节)
         cls_name = cls.__name__
         return cls_name[cls_name.index("m") + 1: cls_name.rfind("Detail")].lower()
+
+    @classmethod
+    def get_dirname(cls, detail: 'DetailEntity', ref: str) -> str:
+        """
+        该方法被 DirDule 调用，用于生成特定层次的文件夹
+
+        通常调用方式如下:
+        Atitle -> ref = 'title' -> DetailEntity.get_dirname(album, 'title')
+        该方法需要返回 ref 对应的文件夹名，默认实现直接返回 getattr(detail, 'title')
+
+        用户可重写此方法，来实现自定义文件夹名
+
+        v2.4.5: 此方法支持优先从 JmModuleConfig.XFIELD_ADVICE 中获取自定义函数并调用返回结果
+
+        :param detail: 本子/章节 实例
+        :param ref: 字段名
+        :returns: 文件夹名
+        """
+
+        advice_func = (JmModuleConfig.AFIELD_ADVICE
+                       if isinstance(detail, JmAlbumDetail)
+                       else JmModuleConfig.PFIELD_ADVICE
+                       ).get(ref, None)
+
+        if advice_func is not None:
+            return advice_func(detail)
+
+        return getattr(detail, ref)
 
 
 class JmImageDetail(JmBaseEntity):
@@ -68,27 +164,38 @@ class JmImageDetail(JmBaseEntity):
                  query_params=None,
                  index=-1,
                  ) -> None:
-        self.aid: str = aid
-        self.scramble_id: str = scramble_id
+        if scramble_id is None or (isinstance(scramble_id, str) and scramble_id == ''):
+            from .jm_toolkit import ExceptionTool
+            ExceptionTool.raises(f'图片的scramble_id不能为空')
+
+        self.aid: str = str(aid)
+        self.scramble_id: str = str(scramble_id)
         self.img_url: str = img_url
-        self.img_file_name: str = img_file_name
+        self.img_file_name: str = img_file_name  # without suffix
         self.img_file_suffix: str = img_file_suffix
 
         self.from_photo: Optional[JmPhotoDetail] = from_photo
-        self.query_params: StrNone = query_params
+        self.query_params: Optional[str] = query_params
+        self.index = index  # 从1开始
+
+        # temp fields, in order to simplify passing parameter
+        self.save_path: str = ''
         self.is_exists: bool = False
-        self.index = index
 
     @property
-    def filename(self) -> str:
-        return self.img_file_name + self.img_file_suffix
+    def filename_without_suffix(self):
+        return self.img_file_name
+
+    @property
+    def is_gif(self):
+        return self.img_file_suffix == '.gif'
 
     @property
     def download_url(self) -> str:
         """
         图片的下载路径
         与 self.img_url 的唯一不同是，在最后会带上 ?{self.query_params}
-        @return:
+        :returns: 图片的下载路径
         """
         if self.query_params is None:
             return self.img_url
@@ -125,38 +232,41 @@ class JmImageDetail(JmBaseEntity):
             index=index,
         )
 
-    """
-    below help for debug method 
-    """
-
     @property
     def tag(self) -> str:
-        return f'{self.aid}/{self.filename} [{self.index + 1}/{len(self.from_photo)}]'
+        """
+        this tag is used to print pretty info when logging
+        """
+        return f'{self.aid}/{self.img_file_name}{self.img_file_suffix} [{self.index}/{len(self.from_photo)}]'
+
+    @classmethod
+    def is_image(cls):
+        return True
 
 
 class JmPhotoDetail(DetailEntity):
 
     def __init__(self,
                  photo_id,
-                 scramble_id,
                  name,
-                 keywords,
                  series_id,
                  sort,
+                 tags='',
+                 scramble_id='',
                  page_arr=None,
                  data_original_domain=None,
                  data_original_0=None,
                  author=None,
                  from_album=None,
                  ):
-        self.photo_id: str = photo_id
-        self.scramble_id: str = scramble_id
+        self.photo_id: str = str(photo_id)
+        self.scramble_id: str = str(scramble_id)
         self.name: str = str(name).strip()
         self.sort: int = int(sort)
-        self._keywords: str = keywords
+        self._tags: str = tags
         self._series_id: int = int(series_id)
 
-        self._author: StrNone = author
+        self._author: Optional[str] = author
         self.from_album: Optional[JmAlbumDetail] = from_album
         self.index = self.album_index
 
@@ -168,7 +278,7 @@ class JmPhotoDetail(DetailEntity):
         # page_arr存放了该photo的所有图片文件名 img_name
         self.page_arr: List[str] = page_arr
         # 图片的cdn域名
-        self.data_original_domain: StrNone = data_original_domain
+        self.data_original_domain: Optional[str] = data_original_domain
         # 第一张图的URL
         self.data_original_0 = data_original_0
 
@@ -190,7 +300,13 @@ class JmPhotoDetail(DetailEntity):
         if self.from_album is not None:
             return self.from_album.tags
 
-        return self._keywords.split(',')
+        tag_str = self._tags
+        if ',' in tag_str:
+            # html
+            return tag_str.split(',')
+        else:
+            # api
+            return tag_str.split()
 
     @property
     def indextitle(self):
@@ -223,13 +339,13 @@ class JmPhotoDetail(DetailEntity):
             return self._author.strip()
 
         # 使用默认
-        return JmModuleConfig.default_author
+        return JmMagicConstants.DEFAULT_AUTHOR
 
     def create_image_detail(self, index) -> JmImageDetail:
         # 校验参数
         length = len(self.page_arr)
         if index >= length:
-            raise JmModuleConfig.exception(f'创建JmImageDetail失败，{index} >= {length}')
+            raise IndexError(f'image index out of range for photo-{self.photo_id}: {index} >= {length}')
 
         data_original = self.get_img_data_original(self.page_arr[index])
 
@@ -239,7 +355,7 @@ class JmPhotoDetail(DetailEntity):
             data_original,
             from_photo=self,
             query_params=self.data_original_query_params,
-            index=index,
+            index=index + 1,
         )
 
     def get_img_data_original(self, img_name: str) -> str:
@@ -248,14 +364,15 @@ class JmPhotoDetail(DetailEntity):
         例如：img_name = 01111.webp
         返回：https://cdn-msp2.18comic.org/media/photos/147643/01111.webp
         """
-        data_original_domain = self.data_original_domain
-        if data_original_domain is None:
-            raise JmModuleConfig.exception(f'图片域名为空: {self.__dict__}')
+        domain = self.data_original_domain
 
-        return f'https://{data_original_domain}/media/photos/{self.photo_id}/{img_name}'
+        from .jm_toolkit import ExceptionTool
+        ExceptionTool.require_true(domain is not None, f'图片域名为空: {domain}')
+
+        return f'{JmModuleConfig.PROT}{domain}/media/photos/{self.photo_id}/{img_name}'
 
     # noinspection PyMethodMayBeStatic
-    def get_data_original_query_params(self, data_original_0: StrNone) -> str:
+    def get_data_original_query_params(self, data_original_0: Optional[str]) -> str:
         if data_original_0 is None:
             return f'v={time_stamp()}'
 
@@ -281,6 +398,10 @@ class JmPhotoDetail(DetailEntity):
     def __iter__(self) -> Generator[JmImageDetail, None, None]:
         return super().__iter__()
 
+    @classmethod
+    def is_photo(cls):
+        return True
+
 
 class JmAlbumDetail(DetailEntity):
 
@@ -301,29 +422,30 @@ class JmAlbumDetail(DetailEntity):
                  tags,
                  related_list=None,
                  ):
-        self.album_id: str = album_id
-        self.scramble_id: str = scramble_id
+        self.album_id: str = str(album_id)
+        self.scramble_id: str = str(scramble_id)
         self.name: str = name
-        self.page_count = int(page_count)  # 总页数
+        self.page_count: int = int(page_count)  # 总页数
         self.pub_date: str = pub_date  # 发布日期
         self.update_date: str = update_date  # 更新日期
 
         self.likes: str = likes  # [1K] 點擊喜歡
         self.views: str = views  # [40K] 次觀看
-        self.comment_count: int = self.__parse_comment_count(comment_count)  # 评论数
+        self.comment_count: int = int(comment_count)  # 评论数
         self.works: List[str] = works  # 作品
         self.actors: List[str] = actors  # 登場人物
         self.tags: List[str] = tags  # 標籤
         self.authors: List[str] = authors  # 作者
 
         # 有的 album 没有章节，则自成一章。
+        episode_list: List[Tuple[str, str, str, str]]
         if len(episode_list) == 0:
             # photo_id, photo_index, photo_title, photo_pub_date
-            episode_list = [(album_id, 1, name, pub_date)]
+            episode_list = [(album_id, "1", name, pub_date)]
         else:
             episode_list = self.distinct_episode(episode_list)
 
-        self.episode_list: List[Tuple] = episode_list
+        self.episode_list = episode_list
         self.related_list = related_list
 
     @property
@@ -335,39 +457,33 @@ class JmAlbumDetail(DetailEntity):
         if len(self.authors) >= 1:
             return self.authors[0]
 
-        return JmModuleConfig.default_author
+        return JmMagicConstants.DEFAULT_AUTHOR
 
     @property
     def id(self):
         return self.album_id
 
     @staticmethod
-    def distinct_episode(episode_list):
-        ret = []
+    def distinct_episode(episode_list: list):
+        """
+        去重章节
+        photo_id, photo_index, photo_title, photo_pub_date
+        """
+        episode_list.sort(key=lambda e: int(e[1]))  # 按照photo_index排序
+        ret = [episode_list[0]]
 
-        def not_exist(episode):
-            photo_id = episode[0]
-            for each in ret:
-                if each[0] == photo_id:
-                    return False
-            return True
-
-        for episode in episode_list:
-            if not_exist(episode):
-                ret.append(episode)
+        for i in range(1, len(episode_list)):
+            if ret[-1][1] != episode_list[i][1]:
+                ret.append(episode_list[i])
 
         return ret
-
-    # noinspection PyMethodMayBeStatic
-    def __parse_comment_count(self, comment_count: str) -> int:
-        return int(comment_count)
 
     def create_photo_detail(self, index) -> Tuple[JmPhotoDetail, Tuple]:
         # 校验参数
         length = len(self.episode_list)
 
         if index >= length:
-            raise JmModuleConfig.exception(f'创建JmPhotoDetail失败，{index} >= {length}')
+            raise IndexError(f'photo index out of range for album-{self.album_id}: {index} >= {length}')
 
         # ('212214', '81', '94 突然打來', '2020-08-29')
         pid, pindex, pname, _pub_date = self.episode_list[index]
@@ -376,13 +492,9 @@ class JmAlbumDetail(DetailEntity):
             photo_id=pid,
             scramble_id=self.scramble_id,
             name=pname,
-            keywords='',
             series_id=self.album_id,
             sort=pindex,
-            author=self.author,
             from_album=self,
-            page_arr=None,
-            data_original_domain=None
         )
 
         return photo, (self.episode_list[index])
@@ -399,15 +511,42 @@ class JmAlbumDetail(DetailEntity):
     def __iter__(self) -> Generator[JmPhotoDetail, None, None]:
         return super().__iter__()
 
+    @classmethod
+    def is_album(cls):
+        return True
 
-class JmSearchPage(JmBaseEntity, IndexedEntity):
+
+class JmPageContent(JmBaseEntity, IndexedEntity):
     ContentItem = Tuple[str, Dict[str, Any]]
 
-    def __init__(self, content: List[ContentItem]):
-        # [
-        #   album_id, {title, tag_list, ...}
-        # ]
+    def __init__(self, content: List[ContentItem], total: int):
+
+        """
+        content:
+        [
+          album_id, {title, tag_list, ...}
+        ]
+        :param content: 分页数据
+        :param total: 总结果数
+        """
         self.content = content
+        self.total = total
+
+    @property
+    def page_count(self) -> int:
+        """
+        页数
+        """
+        page_size = self.page_size
+        import math
+        return math.ceil(int(self.total) / page_size)
+
+    @property
+    def page_size(self) -> int:
+        """
+        页大小
+        """
+        raise NotImplementedError
 
     def iter_id(self) -> Generator[str, None, None]:
         """
@@ -428,7 +567,33 @@ class JmSearchPage(JmBaseEntity, IndexedEntity):
         返回 album_id, album_title, album_tag_list 的迭代器
         """
         for aid, ainfo in self.content:
+            ainfo.setdefault('tag_list', [])
             yield aid, ainfo['name'], ainfo['tag_list']
+
+    # 下面的方法实现方便的元素访问
+
+    def __len__(self):
+        return len(self.content)
+
+    def __iter__(self):
+        return self.iter_id_title()
+
+    def __getitem__(self, item) -> Union[ContentItem, List[ContentItem]]:
+        return super().__getitem__(item)
+
+    def getindex(self, index: int):
+        return self.content[index]
+
+    @classmethod
+    def is_page(cls):
+        return True
+
+
+class JmSearchPage(JmPageContent):
+
+    @property
+    def page_size(self) -> int:
+        return JmMagicConstants.PAGE_SIZE_SEARCH
 
     # 下面的方法是对单个album的包装
 
@@ -447,20 +612,34 @@ class JmSearchPage(JmBaseEntity, IndexedEntity):
                 'name': album.name,
                 'tag_list': album.tags,
             }
-        )])
+        )], 1)
         setattr(page, 'album', album)
         return page
 
-    # 下面的方法实现方便的元素访问
 
-    def __len__(self):
-        return len(self.content)
+JmCategoryPage = JmSearchPage
 
-    def __iter__(self):
-        return self.iter_id_title()
 
-    def __getitem__(self, item) -> Union[ContentItem, List[ContentItem]]:
-        return super().__getitem__(item)
+class JmFavoritePage(JmPageContent):
 
-    def getindex(self, index: int):
-        return self.content[index]
+    def __init__(self, content, folder_list, total):
+        """
+
+        :param content: 收藏夹一页数据
+        :param folder_list: 所有的收藏夹的信息
+        :param total: 收藏夹的收藏总数
+        """
+        super().__init__(content, total)
+        self.folder_list = folder_list
+
+    @property
+    def page_size(self) -> int:
+        return JmMagicConstants.PAGE_SIZE_FAVORITE
+
+    def iter_folder_id_name(self) -> Generator[Tuple[str, str], None, None]:
+        """
+        用户文件夹的迭代器
+        """
+        for folder_info in self.folder_list:
+            fid, fname = folder_info['FID'], folder_info['name']
+            yield fid, fname
