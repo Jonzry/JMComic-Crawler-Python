@@ -6,14 +6,6 @@ def default_jm_logging(topic: str, msg: str):
     print(f'{format_ts()}:【{topic}】{msg}')
 
 
-def default_raise_exception_executor(msg, _extra):
-    raise JmModuleConfig.CLASS_EXCEPTION(msg)
-
-
-class JmcomicException(Exception):
-    pass
-
-
 # 禁漫常量
 class JmMagicConstants:
     # 搜索参数-排序
@@ -147,16 +139,16 @@ class JmModuleConfig:
     CLASS_ALBUM = None
     CLASS_PHOTO = None
     CLASS_IMAGE = None
-    CLASS_EXCEPTION = JmcomicException
+
     # 客户端注册表
     REGISTRY_CLIENT = {}
     # 插件注册表
     REGISTRY_PLUGIN = {}
+    # 异常处理器
+    REGISTRY_EXCEPTION_ADVICE = {}
 
     # 执行log的函数
     executor_log = default_jm_logging
-    # 网页正则表达式解析失败时，执行抛出异常的函数，可以替换掉用于log
-    executor_raise_exception = default_raise_exception_executor
 
     # 使用固定时间戳
     flag_use_fix_timestamp = True
@@ -318,7 +310,7 @@ class JmModuleConfig:
     # 一般情况下，建议使用option配置文件来定制配置
     # 而如果只想修改几个简单常用的配置，也可以下方的DEFAULT_XXX属性
     JM_OPTION_VER = '2.1'
-    DEFAULT_CLIENT_IMPL = 'html'  # 默认Client实现类型为网页端
+    DEFAULT_CLIENT_IMPL = 'api'  # 默认Client实现类型为网页端
     DEFAULT_CLIENT_CACHE = True  # 默认开启Client缓存，缓存级别是level_option，详见CacheRegistry
     DEFAULT_PROXIES = ProxyBuilder.system_proxy()  # 默认使用系统代理
 
@@ -345,7 +337,7 @@ class JmModuleConfig:
                 }
             },
             'impl': None,
-            'retry_times': 5
+            'retry_times': 5,
         },
         'plugins': {
             # 如果插件抛出参数校验异常，只log。（全局配置，可以被插件的局部配置覆盖）
@@ -410,6 +402,10 @@ class JmModuleConfig:
         ExceptionTool.require_true(getattr(client_class, 'client_key', None) is not None,
                                    f'未配置client_key, class: {client_class}')
         cls.REGISTRY_CLIENT[client_class.client_key] = client_class
+
+    @classmethod
+    def register_exception_advice(cls, etype, eadvice):
+        cls.REGISTRY_EXCEPTION_ADVICE[etype] = eadvice
 
 
 jm_log = JmModuleConfig.jm_log

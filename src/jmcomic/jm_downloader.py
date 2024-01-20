@@ -57,6 +57,7 @@ class JmDownloader(DownloadCallback):
         client = self.client_for_album(album_id)
         album = client.get_album_detail(album_id)
         self.download_by_album_detail(album, client)
+        return album
 
     def download_by_album_detail(self, album: JmAlbumDetail, client: JmcomicClient):
         self.before_album(album)
@@ -71,6 +72,7 @@ class JmDownloader(DownloadCallback):
         client = self.client_for_photo(photo_id)
         photo = client.get_photo_detail(photo_id)
         self.download_by_photo_detail(photo, client)
+        return photo
 
     def download_by_photo_detail(self, photo: JmPhotoDetail, client: JmcomicClient):
         client.check_photo(photo)
@@ -181,6 +183,14 @@ class JmDownloader(DownloadCallback):
             downloader=self,
         )
 
+    def after_photo(self, photo: JmPhotoDetail):
+        super().after_photo(photo)
+        self.option.call_all_plugin(
+            'after_photo',
+            photo=photo,
+            downloader=self,
+        )
+
     def after_image(self, image: JmImageDetail, img_save_path):
         super().after_image(image, img_save_path)
         photo = image.from_photo
@@ -199,6 +209,13 @@ class JmDownloader(DownloadCallback):
                    f'{self.__class__.__name__} Exit with exception: {exc_type, exc_val}'
                    )
 
+    @classmethod
+    def use(cls, *args, **kwargs):
+        """
+        让本类替换JmModuleConfig.CLASS_DOWNLOADER
+        """
+        JmModuleConfig.CLASS_DOWNLOADER = cls
+
 
 class DoNotDownloadImage(JmDownloader):
     """
@@ -213,3 +230,37 @@ class DoNotDownloadImage(JmDownloader):
         # ensure make dir
         self.option.decide_image_filepath(image)
         pass
+
+
+class JustDownloadSpecificCountImage(JmDownloader):
+    from threading import Lock
+
+    count_lock = Lock()
+    count = 0
+
+    def __init__(self, option: JmOption) -> None:
+        super().__init__(option)
+
+    def download_by_image_detail(self, image: JmImageDetail, client: JmcomicClient):
+        # ensure make dir
+        self.option.decide_image_filepath(image)
+
+        if self.try_countdown():
+            return super().download_by_image_detail(image, client)
+
+    def try_countdown(self):
+        if self.count < 0:
+            return False
+
+        with self.count_lock:
+            if self.count < 0:
+                return False
+
+            self.count -= 1
+
+            return self.count >= 0
+
+    @classmethod
+    def use(cls, count):
+        cls.count = count
+        super().use()

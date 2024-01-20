@@ -41,16 +41,15 @@ class JmResp:
 
     def require_success(self):
         if self.is_not_success:
-            ExceptionTool.raises_resp(self.text, self)
+            ExceptionTool.raises_resp(self.error_msg(), self)
+
+    def error_msg(self):
+        return self.text
 
 
 class JmImageResp(JmResp):
 
-    def require_success(self):
-        if self.is_not_success:
-            ExceptionTool.raises_resp(self.get_error_msg(), self)
-
-    def get_error_msg(self):
+    def error_msg(self):
         msg = f'禁漫图片获取失败: [{self.url}]'
         if self.http_code != 200:
             msg += f'，http状态码={self.http_code}'
@@ -71,13 +70,13 @@ class JmImageResp(JmResp):
             JmImageTool.save_resp_img(
                 self,
                 path,
-                need_convert=suffix_not_equal(img_url, path),
+                need_convert=suffix_not_equal(img_url[:img_url.find("?")], path),
             )
         else:
             # 解密图片并保存文件
             JmImageTool.decode_and_save(
                 JmImageTool.get_num_by_url(scramble_id, img_url),
-                JmImageTool.open_Image(self.content),
+                JmImageTool.open_image(self.content),
                 path,
             )
 
@@ -86,7 +85,10 @@ class JmJsonResp(JmResp):
 
     @field_cache()
     def json(self) -> Dict:
-        return self.resp.json()
+        try:
+            return self.resp.json()
+        except Exception:
+            ExceptionTool.raises_resp('json解析失败', self, JsonResolveFailException)
 
     def model(self) -> DictModel:
         return DictModel(self.json())
