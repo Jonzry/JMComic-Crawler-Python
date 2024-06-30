@@ -17,8 +17,11 @@ class CacheRegistry:
         return registry[client]
 
     @classmethod
-    def enable_client_cache_on_condition(cls, option: 'JmOption', client: JmcomicClient,
-                                         cache: Union[None, bool, str, Callable]):
+    def enable_client_cache_on_condition(cls,
+                                         option: 'JmOption',
+                                         client: JmcomicClient,
+                                         cache: Union[None, bool, str, Callable],
+                                         ):
         """
         cache parameter
 
@@ -69,10 +72,8 @@ class DirRule:
 
     Detail = Union[JmAlbumDetail, JmPhotoDetail, None]
     RuleFunc = Callable[[Detail], str]
-    RuleSolver = Tuple[int, RuleFunc, str]
+    RuleSolver = Tuple[str, RuleFunc, str]
     RuleSolverList = List[RuleSolver]
-
-    rule_solver_cache: Dict[str, RuleSolver] = {}
 
     def __init__(self, rule: str, base_dir=None):
         base_dir = JmcomicText.parse_to_abspath(base_dir)
@@ -97,20 +98,37 @@ class DirRule:
 
         return fix_filepath('/'.join(path_ls), is_dir=True)
 
+    def decide_album_root_dir(self, album: JmAlbumDetail) -> str:
+        path_ls = []
+        for solver in self.solver_list:
+            key, _, rule = solver
+
+            if key != 'Bd' and key != 'A':
+                continue
+
+            try:
+                ret = self.apply_rule_solver(album, None, solver)
+            except BaseException as e:
+                # noinspection PyUnboundLocalVariable
+                jm_log('dir_rule', f'路径规则"{rule}"的解析出错: {e}, album={album}')
+                raise e
+
+            path_ls.append(str(ret))
+
+        return fix_filepath('/'.join(path_ls), is_dir=True)
+
     def get_role_solver_list(self, rule_dsl: str, base_dir: str) -> RuleSolverList:
         """
         解析下载路径dsl，得到一个路径规则解析列表
         """
 
-        if '_' not in rule_dsl and rule_dsl != 'Bd':
-            ExceptionTool.raises(f'不支持的dsl: "{rule_dsl}"')
-
-        rule_list = rule_dsl.split('_')
+        rule_list = self.split_rule_dsl(rule_dsl)
         solver_ls: List[DirRule.RuleSolver] = []
 
         for rule in rule_list:
+            rule = rule.strip()
             if rule == 'Bd':
-                solver_ls.append((0, lambda _: base_dir, 'Bd'))
+                solver_ls.append(('Bd', lambda _: base_dir, 'Bd'))
                 continue
 
             rule_solver = self.get_rule_solver(rule)
@@ -121,26 +139,29 @@ class DirRule:
 
         return solver_ls
 
+    # noinspection PyMethodMayBeStatic
+    def split_rule_dsl(self, rule_dsl: str) -> List[str]:
+        if rule_dsl == 'Bd':
+            return [rule_dsl]
+
+        if '/' in rule_dsl:
+            return rule_dsl.split('/')
+
+        if '_' in rule_dsl:
+            return rule_dsl.split('_')
+
+        ExceptionTool.raises(f'不支持的rule配置: "{rule_dsl}"')
+
     @classmethod
     def get_rule_solver(cls, rule: str) -> Optional[RuleSolver]:
-        # 查找缓存
-        if rule in cls.rule_solver_cache:
-            return cls.rule_solver_cache[rule]
-
         # 检查dsl
         if not rule.startswith(('A', 'P')):
             return None
 
-        # Axxx or Pyyy
-        key = 1 if rule[0] == 'A' else 2
-
         def solve_func(detail):
             return fix_windir_name(str(DetailEntity.get_dirname(detail, rule[1:])))
 
-        # 保存缓存
-        rule_solver = (key, solve_func, rule)
-        cls.rule_solver_cache[rule] = rule_solver
-        return rule_solver
+        return rule[0], solve_func, rule
 
     @classmethod
     def apply_rule_solver(cls, album, photo, rule_solver: RuleSolver) -> str:
@@ -154,11 +175,11 @@ class DirRule:
         """
 
         def choose_detail(key):
-            if key == 0:
+            if key == 'Bd':
                 return None
-            if key == 1:
+            if key == 'A':
                 return album
-            if key == 2:
+            if key == 'P':
                 return photo
 
         key, func, _ = rule_solver
@@ -178,22 +199,37 @@ class JmOption:
                  client: Dict,
                  plugins: Dict,
                  filepath=None,
+                 call_after_init_plugin=True,
                  ):
         # 路径规则配置
         self.dir_rule = DirRule(**dir_rule)
         # 客户端配置
-        self.client = AdvancedEasyAccessDict(client)
+        self.client = AdvancedDict(client)
         # 下载配置
-        self.download = AdvancedEasyAccessDict(download)
+        self.download = AdvancedDict(download)
         # 插件配置
-        self.plugins = AdvancedEasyAccessDict(plugins)
+        self.plugins = AdvancedDict(plugins)
         # 其他配置
         self.filepath = filepath
 
         # 需要主线程等待完成的插件
         self.need_wait_plugins = []
 
-        self.call_all_plugin('after_init', safe=True)
+        if call_after_init_plugin:
+            self.call_all_plugin('after_init', safe=True)
+
+    def copy_option(self):
+        return self.__class__(
+            dir_rule={
+                'rule': self.dir_rule.rule_dsl,
+                'base_dir': self.dir_rule.base_dir,
+            },
+            download=self.download.src_dict,
+            client=self.client.src_dict,
+            plugins=self.plugins.src_dict,
+            filepath=self.filepath,
+            call_after_init_plugin=False
+        )
 
     """
     下面是decide系列方法，为了支持重写和增加程序动态性。
@@ -206,28 +242,6 @@ class JmOption:
     # noinspection PyMethodMayBeStatic,PyUnusedLocal
     def decide_photo_batch_count(self, album: JmAlbumDetail):
         return self.download.threading.photo
-
-    def decide_album_dir(self, album: JmAlbumDetail) -> str:
-        """
-        该方法目前仅在 plugin-zip 中使用，不建议外部调用
-        """
-        dir_layer = []
-        dir_rule = self.dir_rule
-        for rule in dir_rule.rule_dsl.split('_'):
-            if rule == 'Bd':
-                dir_layer.append(dir_rule.base_dir)
-                continue
-
-            if rule[0] == 'A':
-                name = dir_rule.apply_rule_directly(album, None, rule)
-                dir_layer.append(name)
-
-            if rule[0] == 'P':
-                break
-
-        from os.path import join
-        # noinspection PyTypeChecker
-        return join(*dir_layer)
 
     # noinspection PyMethodMayBeStatic
     def decide_image_filename(self, image: JmImageDetail) -> str:
@@ -256,7 +270,15 @@ class JmOption:
         )
 
         if ensure_exists:
-            mkdir_if_not_exists(save_dir)
+            try:
+                mkdir_if_not_exists(save_dir)
+            except OSError as e:
+                if e.errno == 36:
+                    # 目录名过长
+                    limit = JmModuleConfig.VAR_FILE_NAME_LENGTH_LIMIT
+                    jm_log('error', f'目录名过长，无法创建目录，强制缩短到{limit}个字符并重试')
+                    save_dir = save_dir[0:limit]
+                    mkdir_if_not_exists(save_dir)
 
         return save_dir
 
@@ -330,7 +352,7 @@ class JmOption:
     def deconstruct(self) -> Dict:
         return {
             'version': JmModuleConfig.JM_OPTION_VER,
-            'log': JmModuleConfig.flag_enable_jm_log,
+            'log': JmModuleConfig.FLAG_ENABLE_JM_LOG,
             'dir_rule': {
                 'rule': self.dir_rule.rule_dsl,
                 'base_dir': self.dir_rule.base_dir,
@@ -347,6 +369,7 @@ class JmOption:
     @classmethod
     def from_file(cls, filepath: str) -> 'JmOption':
         dic: dict = PackerUtil.unpack(filepath)[0]
+        dic.setdefault('filepath', filepath)
         return cls.construct(dic)
 
     def to_file(self, filepath=None):
@@ -539,7 +562,7 @@ class JmOption:
 
         pclass: Type[JmOptionPlugin]
         plugin: Optional[JmOptionPlugin] = None
-        
+
         try:
             # 构建插件对象
             plugin: JmOptionPlugin = pclass.build(self)
