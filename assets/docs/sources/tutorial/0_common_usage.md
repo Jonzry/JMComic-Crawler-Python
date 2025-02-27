@@ -38,7 +38,7 @@ download_album(123, option)
 option.download_album(123)
 ```
 
-## 获取本子/章节/图片的实体类
+## 获取本子/章节/图片的实体类，下载图片
 
 ```python
 from jmcomic import *
@@ -53,12 +53,19 @@ album: JmAlbumDetail = client.get_album_detail('427413')
 def fetch(photo: JmPhotoDetail):
     # 章节实体类
     photo = client.get_photo_detail(photo.photo_id, False)
-
+    print(f'章节id: {photo.photo_id}')
+    
     # 图片实体类
     image: JmImageDetail
     for image in photo:
-        print(image.img_url)
-
+        print(f'图片url: {image.img_url}')
+        
+    # 下载单个图片
+    client.download_by_image_detail(image, './a.jpg')
+    # 如果是已知未混淆的图片，也可以直接使用url来下载
+    random_image_domain = JmModuleConfig.DOMAIN_IMAGE_LIST
+    client.download_image(f'https://{random_image_domain}/media/albums/416130.jpg', './a.jpg')
+    
 
 # 多线程发起请求
 multi_thread_launcher(
@@ -66,6 +73,36 @@ multi_thread_launcher(
     apply_each_obj_func=fetch
 )
 ```
+
+## jmcomic异常处理示例
+
+```python
+from jmcomic import *
+
+# 客户端
+client = JmOption.default().new_jm_client()
+
+# 捕获jmcomic可能出现的异常
+try:
+    # 请求本子实体类
+    album: JmAlbumDetail = client.get_album_detail('427413')
+except MissingAlbumPhotoException as e:
+    print(f'id={e.error_jmid}的本子不存在')
+    
+except JsonResolveFailException as e:
+    print(f'解析json失败')
+    # 响应对象
+    resp = e.resp
+    print(f'resp.text: {resp.text}, resp.status_code: {resp.status_code}')
+    
+except RequestRetryAllFailException as e:
+    print(f'请求失败，重试次数耗尽')
+    
+except JmcomicException as e:
+    # 捕获所有异常，用作兜底
+    print(f'jmcomic遇到异常: {e}')
+```
+
 
 ## 搜索本子
 
@@ -107,6 +144,35 @@ for aid, atitle, tag_list in page.iter_id_title_tag():  # 使用page的iter_id_t
         aid_list.append(aid)
 
 download_album(aid_list, option)
+```
+
+## 获取收藏夹
+
+可参考discussions: https://github.com/hect0x7/JMComic-Crawler-Python/discussions/235
+
+```python
+from jmcomic import *
+
+option = JmOption.default()
+client = option.new_jm_client()
+client.login('用户名', '密码') # 也可以使用login插件/配置cookies
+
+# 遍历全部收藏的所有页
+for page in cl.favorite_folder_gen(): # 如果你只想获取特定收藏夹，需要添加folder_id参数
+    # 遍历每页结果
+    for aid, atitle in page.iter_id_title():
+        # aid: 本子的album_id
+        # atitle: 本子的名称
+        print(aid)
+    # 打印当前帐号的所有收藏夹信息
+    for folder_id, folder_name in page.iter_folder_id_name():
+        print(f'收藏夹id: {folder_id}, 收藏夹名称: {folder_name}')
+
+# 获取特定收藏夹的单页，使用favorite_folder方法
+page = client.favorite_folder(page=1,
+                          order_by=JmMagicConstants.ORDER_BY_LATEST,
+                          folder_id='0' # 收藏夹id
+                          )
 ```
 
 ## 分类 / 排行榜

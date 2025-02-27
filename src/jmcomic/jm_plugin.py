@@ -601,7 +601,7 @@ class FavoriteFolderExportPlugin(JmOptionPlugin):
         for page in page_data:
             for aid, extra in page.content:
                 data.append(
-                    (aid, extra.get('author', '') or JmMagicConstants.DEFAULT_AUTHOR, extra['name'])
+                    (aid, extra.get('author', '') or JmModuleConfig.DEFAULT_AUTHOR, extra['name'])
                 )
 
         if len(data) == 0:
@@ -734,13 +734,17 @@ class Img2pdfPlugin(JmOptionPlugin):
     plugin_key = 'img2pdf'
 
     def invoke(self,
-               photo: JmPhotoDetail,
+               photo: JmPhotoDetail = None,
+               album: JmAlbumDetail = None,
                downloader=None,
                pdf_dir=None,
                filename_rule='Pid',
                delete_original_file=False,
                **kwargs,
                ):
+        if photo is None and album is None:
+            jm_log('wrong_usage', 'img2pdf必须运行在after_photo或after_album时')
+
         try:
             import img2pdf
         except ImportError:
@@ -749,28 +753,145 @@ class Img2pdfPlugin(JmOptionPlugin):
 
         self.delete_original_file = delete_original_file
 
-        # 处理文件夹配置
-        filename = DirRule.apply_rule_directly(None, photo, filename_rule)
-        photo_dir = self.option.decide_image_save_dir(photo)
-
         # 处理生成的pdf文件的路径
-        if pdf_dir is None:
-            pdf_dir = photo_dir
-        else:
-            pdf_dir = fix_filepath(pdf_dir, True)
-            mkdir_if_not_exists(pdf_dir)
+        pdf_dir = self.ensure_make_pdf_dir(pdf_dir)
 
+        # 处理pdf文件名
+        filename = DirRule.apply_rule_directly(album, photo, filename_rule)
+
+        # pdf路径
         pdf_filepath = os.path.join(pdf_dir, f'{filename}.pdf')
 
         # 调用 img2pdf 把 photo_dir 下的所有图片转为pdf
-        all_img = files_of_dir(photo_dir)
-        with open(pdf_filepath, 'wb') as f:
-            f.write(img2pdf.convert(all_img))
+        img_path_ls, img_dir_ls = self.write_img_2_pdf(pdf_filepath, album, photo)
+        self.log(f'Convert Successfully: JM{album or photo} → {pdf_filepath}')
 
         # 执行删除
-        self.log(f'Convert Successfully: JM{photo.id} → {pdf_filepath}')
-        all_img.append(self.option.decide_image_save_dir(photo, ensure_exists=False))
-        self.execute_deletion(all_img)
+        img_path_ls += img_dir_ls
+        self.execute_deletion(img_path_ls)
+
+    def write_img_2_pdf(self, pdf_filepath, album: JmAlbumDetail, photo: JmPhotoDetail):
+        import img2pdf
+
+        if album is None:
+            img_dir_ls = [self.option.decide_image_save_dir(photo)]
+        else:
+            img_dir_ls = [self.option.decide_image_save_dir(photo) for photo in album]
+
+        img_path_ls = []
+
+        for img_dir in img_dir_ls:
+            imgs = files_of_dir(img_dir)
+            if not imgs:
+                continue
+            img_path_ls += imgs
+
+        with open(pdf_filepath, 'wb') as f:
+            f.write(img2pdf.convert(img_path_ls))
+
+        return img_path_ls, img_dir_ls
+
+    @staticmethod
+    def ensure_make_pdf_dir(pdf_dir: str):
+        pdf_dir = pdf_dir or os.getcwd()
+        pdf_dir = fix_filepath(pdf_dir, True)
+        mkdir_if_not_exists(pdf_dir)
+        return pdf_dir
+
+
+class LongImgPlugin(JmOptionPlugin):
+    plugin_key = 'long_img'
+
+    def invoke(self,
+               photo: JmPhotoDetail = None,
+               album: JmAlbumDetail = None,
+               downloader=None,
+               img_dir=None,
+               filename_rule='Pid',
+               delete_original_file=False,
+               **kwargs,
+               ):
+        if photo is None and album is None:
+            jm_log('wrong_usage', 'long_img必须运行在after_photo或after_album时')
+
+        try:
+            from PIL import Image
+        except ImportError:
+            self.warning_lib_not_install('PIL')
+            return
+
+        self.delete_original_file = delete_original_file
+
+        # 处理文件夹配置
+        img_dir = self.get_img_dir(img_dir)
+
+        # 处理生成的长图文件的路径
+        filename = DirRule.apply_rule_directly(album, photo, filename_rule)
+
+        # 长图路径
+        long_img_path = os.path.join(img_dir, f'{filename}.png')
+
+        # 调用 PIL 把 photo_dir 下的所有图片合并为长图
+        img_path_ls = self.write_img_2_long_img(long_img_path, album, photo)
+        self.log(f'Convert Successfully: JM{album or photo} → {long_img_path}')
+
+        # 执行删除
+        self.execute_deletion(img_path_ls)
+
+    def write_img_2_long_img(self, long_img_path, album: JmAlbumDetail, photo: JmPhotoDetail) -> List[str]:
+        import itertools
+        from PIL import Image
+
+        if album is None:
+            img_dir_items = [self.option.decide_image_save_dir(photo)]
+        else:
+            img_dir_items = [self.option.decide_image_save_dir(photo) for photo in album]
+
+        img_paths = itertools.chain(*map(files_of_dir, img_dir_items))
+        img_paths = filter(lambda x: not x.startswith('.'), img_paths)  # 过滤系统文件
+
+        images = self.open_images(img_paths)
+
+        try:
+            resample_method = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample_method = Image.LANCZOS
+
+        min_img_width = min(img.width for img in images)
+        total_height = 0
+        for i, img in enumerate(images):
+            if img.width > min_img_width:
+                images[i] = img.resize((min_img_width, int(img.height * min_img_width / img.width)),
+                                       resample=resample_method)
+            total_height += images[i].height
+
+        long_img = Image.new('RGB', (min_img_width, total_height))
+        y_offset = 0
+        for img in images:
+            long_img.paste(img, (0, y_offset))
+            y_offset += img.height
+
+        long_img.save(long_img_path)
+        for img in images:
+            img.close()
+
+        return img_paths
+
+    def open_images(self, img_paths: List[str]):
+        images = []
+        for img_path in img_paths:
+            try:
+                img = Image.open(img_path)
+                images.append(img)
+            except IOError as e:
+                self.log(f"Failed to open image {img_path}: {e}", 'error')
+        return images
+
+    @staticmethod
+    def get_img_dir(img_dir: Optional[str]) -> str:
+        img_dir = fix_filepath(img_dir or os.getcwd())
+        mkdir_if_not_exists(img_dir)
+        return img_dir
 
 
 class JmServerPlugin(JmOptionPlugin):
@@ -1067,3 +1188,27 @@ class DeleteDuplicatedFilesPlugin(JmOptionPlugin):
                           [f'  {path}' for path in paths]
                 self.log('\n'.join(message))
                 self.execute_deletion(paths)
+
+
+class ReplacePathStringPlugin(JmOptionPlugin):
+    plugin_key = 'replace_path_string'
+
+    def invoke(self,
+               replace: Dict[str, str],
+               ):
+        if not replace:
+            return
+
+        old_decide_dir = self.option.decide_image_save_dir
+
+        def new_decide_dir(photo, ensure_exists=True) -> str:
+            original_path: str = old_decide_dir(photo, False)
+            for k, v in replace.items():
+                original_path = original_path.replace(k, v)
+
+            if ensure_exists:
+                JmcomicText.try_mkdir(original_path)
+
+            return original_path
+
+        self.option.decide_image_save_dir = new_decide_dir

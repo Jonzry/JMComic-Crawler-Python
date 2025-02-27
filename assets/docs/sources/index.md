@@ -14,7 +14,7 @@
 ## 入门
 
 - [快速上手(GitHub README)](https://github.com/hect0x7/JMComic-Crawler-Python/tree/master?tab=readme-ov-file#%E5%BF%AB%E9%80%9F%E4%B8%8A%E6%89%8B)
-- [常用类和方法演示](tutorial/0_common_usage)
+- [常用类和方法演示](tutorial/0_common_usage.md)
 - [option配置以及插件写法](./option_file_syntax.md)
 
 
@@ -35,6 +35,6 @@
 
 ## 自定义
 - [下载文件夹名](tutorial/9_custom_download_dir_name.md)
-- [日志](tutorial/9_custom_download_dir_name.md)
+- [日志](tutorial/11_log_custom.md)
 - [模块](tutorial/4_module_custom.md)
 
